@@ -114,7 +114,7 @@ mcp_user_config = {}
 
 def get_agent_runtime_arn(mcp_type: str):
     #logger.info(f"mcp_type: {mcp_type}")
-    agent_runtime_name = "mcp_"+mcp_type.replace("-", "_")
+    agent_runtime_name = f"{projectName.lower()}_{mcp_type.replace('-', '_')}"
     #logger.info(f"agent_runtime_name: {agent_runtime_name}")
     client = boto3.client('bedrock-agentcore-control', region_name='us-west-2')
     response = client.list_agent_runtimes()
@@ -185,7 +185,7 @@ def load_config(mcp_type):
 
         return {
             "mcpServers": {
-                "kb-retriever": {
+                "use_aws": {
                     "type": "streamable_http",
                     "url": f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{encoded_arn}/invocations?qualifier=DEFAULT",
                     "headers": {
