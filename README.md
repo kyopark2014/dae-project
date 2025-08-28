@@ -164,10 +164,9 @@ agentcore invoke '{"prompt": "Hello from Bedrock AgentCore!"}'
 
 ## 실행 결과
 
-왼쪽 메뉴의 MCP Config에서 "kb-retriever (remote)"을 선택한 후에 "보일러 에러 코드?"로 입력하면, Streamable HTTP를 지원하는 knowledge base MCP에 접속하여 관련된 문서를 아래와 같이 가져와서 답변할 수 있습니다.
+왼쪽 메뉴의 MCP Config에서 "규격이 80mm인 감압밸브(조당) 설치에 필요한 배관공과 보통인부의 인력 수량은 얼마입니까?"로 입력하면, Streamable HTTP를 지원하는 knowledge base MCP에 접속하여 관련된 문서를 아래와 같이 가져와서 답변할 수 있습니다.
 
-<img width="1292" height="759" alt="image" src="https://github.com/user-attachments/assets/a58b5e92-a478-4120-b5ce-3f2116f662ca" />
-
+<img width="900" alt="image" src="https://github.com/user-attachments/assets/83b67178-29b0-4dd5-a341-93ad414bcc4c" />
 
 
 ## Reference 
