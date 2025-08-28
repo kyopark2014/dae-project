@@ -199,11 +199,17 @@ def initiate():
         memorystores[user_id] = memorystore
 
 def clear_chat_history():
+    # Initialize memory chain
+    initiate()
+    
     global memory_chain
     memory_chain = []
     map_chain[user_id] = memory_chain
 
 def save_chat_history(text, msg):
+    # Initialize memory chain
+    initiate()
+    
     memory_chain.chat_memory.add_user_message(text)
     if len(msg) > MSG_LENGTH:
         memory_chain.chat_memory.add_ai_message(msg[:MSG_LENGTH])                          
@@ -783,6 +789,9 @@ def grade_documents(question, documents):
 # General Conversation
 #########################################################
 def general_conversation(query):
+    # Initialize memory chain
+    initiate()
+    
     llm = get_chat(extended_thinking=reasoning_mode)
 
     system = (
@@ -1098,7 +1107,7 @@ def summary_image(img_base64, instruction):
 
     if instruction:
         logger.info(f"instruction: {instruction}")
-        query = f"{instruction}. <result> tag를 붙여주세요."
+        query = f"{instruction}. <result> tag를 붙여주세요. 한국어로 답변하세요."
         
     else:
         query = "이미지가 의미하는 내용을 풀어서 자세히 알려주세요. markdown 포맷으로 답변을 작성합니다."
@@ -1450,6 +1459,90 @@ def get_image_summarization(object_name, prompt, st):
 
     return contents
 
+def summarize_image(image_content, prompt, st):
+    img = Image.open(BytesIO(image_content))
+    
+    width, height = img.size 
+    logger.info(f"width: {width}, height: {height}, size: {width*height}")
+    
+    # 이미지 리사이징 및 크기 확인
+    isResized = False
+    max_size = 5 * 1024 * 1024  # 5MB in bytes
+    
+    # Initial resizing (based on pixel count)
+    while(width*height > 2000000):  # Limit to approximately 2M pixels
+        width = int(width/2)
+        height = int(height/2)
+        isResized = True
+        logger.info(f"width: {width}, height: {height}, size: {width*height}")
+    
+    if isResized:
+        img = img.resize((width, height))
+    
+    # Base64 size verification and additional resizing
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        buffer = BytesIO()
+        img.save(buffer, format="PNG", optimize=True)
+        img_bytes = buffer.getvalue()
+        img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+        
+        # Base64 size verification (actual transmission size)
+        base64_size = len(img_base64.encode('utf-8'))
+        logger.info(f"attempt {attempt + 1}: base64_size = {base64_size} bytes")
+        
+        if base64_size <= max_size:
+            break
+        else:
+            # Resize smaller if still too large
+            width = int(width * 0.8)
+            height = int(height * 0.8)
+            img = img.resize((width, height))
+            logger.info(f"resizing to {width}x{height} due to size limit")
+    
+    if base64_size > max_size:
+        logger.warning(f"Image still too large after {max_attempts} attempts: {base64_size} bytes")
+        raise Exception(f"이미지 크기가 너무 큽니다. 5MB 이하의 이미지를 사용해주세요.")
+
+    # extract text from the image
+    if debug_mode=="Enable":
+        status = "이미지에서 텍스트를 추출합니다."
+        logger.info(f"status: {status}")
+        st.info(status)
+
+    text = extract_text(img_base64)
+    logger.info(f"extracted text: {text}")
+
+    if text.find('<result>') != -1:
+        extracted_text = text[text.find('<result>')+8:text.find('</result>')] # remove <result> tag
+        # print('extracted_text: ', extracted_text)
+    else:
+        extracted_text = text
+    
+    if debug_mode=="Enable":
+        status = f"### 추출된 텍스트\n\n{extracted_text}"
+        logger.info(f"status: {status}")
+        st.info(status)
+    
+    if debug_mode=="Enable":
+        status = "이미지의 내용을 분석합니다."
+        logger.info(f"status: {status}")
+        st.info(status)
+
+    image_summary = summary_image(img_base64, prompt)
+    
+    if text.find('<result>') != -1:
+        image_summary = image_summary[image_summary.find('<result>')+8:image_summary.find('</result>')]
+    logger.info(f"image summary: {image_summary}")
+            
+    # if len(extracted_text) > 10:
+    #     contents = f"## 이미지 분석\n\n{image_summary}\n\n## 추출된 텍스트\n\n{extracted_text}"
+    # else:
+    #     contents = f"## 이미지 분석\n\n{image_summary}"
+    contents = f"## 이미지 분석\n\n{image_summary}"
+    logger.info(f"image contents: {contents}")
+
+    return contents
 
 ####################### Bedrock Agent #######################
 # RAG using Lambda
@@ -1617,7 +1710,7 @@ def run_rag_with_knowledge_base(query, st):
         logger.info(f"reference_docs: {reference_docs}")
         ref = "\n\n### Reference\n"
         for i, reference in enumerate(reference_docs):
-            page_content = reference['content'][:100].replace("\n", "")
+            page_content = reference.page_content[:100].replace("\n", "")
             ref += f"{i+1}. [{reference.metadata['name']}]({reference.metadata['url']}), {page_content}...\n"    
         logger.info(f"ref: {ref}")
         msg += ref

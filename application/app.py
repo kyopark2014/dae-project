@@ -41,11 +41,20 @@ os.environ["DEV"] = "true"  # Skip user confirmation of get_user_input
 st.set_page_config(page_title='Streamable MCP', page_icon=None, layout="centered", initial_sidebar_state="auto", menu_items=None)
 
 mode_descriptions = {
+    "일상적인 대화": [
+        "대화이력을 바탕으로 챗봇과 일상의 대화를 편안히 즐길수 있습니다."
+    ],
+    "RAG": [
+        "Bedrock Knowledge Base를 이용해 구현한 RAG로 필요한 정보를 검색합니다."
+    ],
     "Agent": [
         "MCP를 활용한 Agent를 이용합니다. 왼쪽 메뉴에서 필요한 MCP를 선택하세요."
     ],
     "Agent (Chat)": [
         "MCP를 활용한 Agent를 이용합니다. 채팅 히스토리를 이용해 interative한 대화를 즐길 수 있습니다."
+    ],
+    "이미지 분석": [
+        "이미지를 업로드하면 이미지의 내용을 요약할 수 있습니다."
     ]
 }
 
@@ -65,7 +74,7 @@ with st.sidebar:
     
     # radio selection
     mode = st.radio(
-        label="원하는 대화 형태를 선택하세요. ",options=["Agent", "Agent (Chat)"], index=0
+        label="원하는 대화 형태를 선택하세요. ",options=["일상적인 대화", "RAG", "Agent", "Agent (Chat)", "이미지 분석"], index=2
     )   
     st.info(mode_descriptions[mode][0])
     
@@ -79,7 +88,7 @@ with st.sidebar:
             "basic", "use_aws (docker)", "use_aws (streamable)", "kb-retriever (docker)", "kb-retriever (streamable)", "사용자 설정"
         ]
         mcp_selections = {}
-        default_selections = ["basic"]
+        default_selections = ["kb-retriever (streamable)"]
         
         if mode=='Agent' or mode=='Agent (Chat)':
             agentType = st.radio(
@@ -147,7 +156,7 @@ with st.sidebar:
             'Claude 3.5 Haiku', 
             'OpenAI OSS 120B',
             'OpenAI OSS 20B'
-        ), index=7
+        ), index=6
     )
 
     # debug checkbox
@@ -168,9 +177,15 @@ with st.sidebar:
         # logger.info(f"reasoningMode: {reasoningMode}")
 
     # RAG grading
-    select_grading = st.checkbox('Grading', value=False)
-    gradingMode = 'Enable' if select_grading else 'Disable'
+    # select_grading = st.checkbox('Grading', value=False)
+    # gradingMode = 'Enable' if select_grading else 'Disable'
+    gradingMode = 'Disable'
     # logger.info(f"gradingMode: {gradingMode}")
+
+    uploaded_file = None
+    if mode=='이미지 분석':
+        st.subheader("🌇 이미지 업로드")
+        uploaded_file = st.file_uploader("이미지 요약을 위한 파일을 선택합니다.", type=["png", "jpg", "jpeg"])
 
     chat.update(modelName, debugMode, multiRegion, reasoningMode, gradingMode, agentType)    
 
@@ -185,6 +200,19 @@ if clear_button==True:
     chat.checkpointers = dict() 
     chat.memorystores = dict() 
     chat.initiate()
+
+# Preview the uploaded image in the sidebar
+file_name = ""
+file_bytes = None
+state_of_code_interpreter = False
+if uploaded_file is not None and clear_button==False:
+    logger.info(f"uploaded_file.name: {uploaded_file.name}")
+
+    if uploaded_file and clear_button==False and mode == '이미지 분석':
+        st.image(uploaded_file, caption="이미지 미리보기", use_container_width=True)
+
+        file_name = uploaded_file.name
+        file_bytes = uploaded_file.getvalue()
 
 # Initialize chat history
 if "messages" not in st.session_state:
@@ -243,8 +271,27 @@ if prompt := st.chat_input("메시지를 입력하세요."):
     logger.info(f"prompt: {prompt}")
 
     with st.chat_message("assistant"):
-        
-        if mode == 'Agent' or mode == 'Agent (Chat)':            
+        if mode == '일상적인 대화':
+            stream = chat.general_conversation(prompt)            
+            response = st.write_stream(stream)
+            logger.info(f"response: {response}")
+            st.session_state.messages.append({"role": "assistant", "content": response})
+
+            chat.save_chat_history(prompt, response)
+
+        elif mode == 'RAG':
+            with st.status("running...", expanded=True, state="running") as status:
+                response, reference_docs = chat.run_rag_with_knowledge_base(prompt, st)                           
+                st.write(response)
+                logger.info(f"response: {response}")
+
+                st.session_state.messages.append({"role": "assistant", "content": response})
+
+                chat.save_chat_history(prompt, response)
+            
+            show_references(reference_docs) 
+                
+        elif mode == 'Agent' or mode == 'Agent (Chat)':            
             sessionState = ""
             if mode == 'Agent':
                 history_mode = "Disable"
@@ -283,6 +330,21 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                     logger.info(f"url: {url}")
                     file_name = url[url.rfind('/')+1:]
                     st.image(url, caption=file_name, use_container_width=True)
+        
+        elif mode == '이미지 분석':
+            if uploaded_file is None or uploaded_file == "":
+                st.error("파일을 먼저 업로드하세요.")
+                st.stop()
+
+            else:
+                if modelName == "Claude 3.5 Haiku":
+                    st.error("Claude 3.5 Haiku은 이미지를 지원하지 않습니다. 다른 모델을 선택해주세요.")
+                else:
+                    with st.status("thinking...", expanded=True, state="running") as status:
+                        summary = chat.summarize_image(file_bytes, prompt, st)
+                        st.write(summary)
+
+                        st.session_state.messages.append({"role": "assistant", "content": summary})
 
 def main():
     """Entry point for the application."""
