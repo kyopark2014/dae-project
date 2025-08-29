@@ -85,7 +85,7 @@ with st.sidebar:
 
         # Change radio to checkbox
         mcp_options = [
-            "basic", "use_aws (docker)", "use_aws (streamable)", "kb-retriever (docker)", "kb-retriever (streamable)", "사용자 설정"
+            "basic", "use_aws (docker)", "use_aws (streamable)", "kb-retriever (docker)", "kb-retriever (streamable)", "agentcore_coder", "사용자 설정"
         ]
         mcp_selections = {}
         default_selections = ["kb-retriever (streamable)"]
@@ -331,7 +331,7 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                     file_name = url[url.rfind('/')+1:]
                     st.image(url, caption=file_name, use_container_width=True)
         
-        elif mode == '이미지 분석':
+        elif mode == "이미지 분석":
             if uploaded_file is None or uploaded_file == "":
                 st.error("파일을 먼저 업로드하세요.")
                 st.stop()

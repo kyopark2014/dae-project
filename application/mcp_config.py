@@ -244,6 +244,18 @@ def load_config(mcp_type):
                 }
             }
         }
+    elif mcp_type == "agentcore_coder":
+        return {
+            "mcpServers": {
+                "agentcore_coder": {
+                    "command": "python",
+                    "args": [
+                        f"{workingDir}/mcp_server_agentcore_coder.py"
+                    ]
+                }
+            }
+        }
+    
         logger.info(f"mcp_config: {mcp_config}")
         return mcp_config
     elif mcp_type == "사용자 설정":
