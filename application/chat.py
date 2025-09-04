@@ -1669,7 +1669,7 @@ def get_reference_docs(docs):
         )     
     return reference_docs
 
-def run_rag_with_knowledge_base(query, st):
+def run_rag_with_lambda(query, st):
     global reference_docs, contentList
     reference_docs = []
     contentList = []
@@ -1716,7 +1716,109 @@ def run_rag_with_knowledge_base(query, st):
         msg += ref
     
     return msg, reference_docs
-   
+
+bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime", region_name=bedrock_region)
+knowledge_base_id = config['knowledge_base_id']
+number_of_results = 4
+def retrieve(query):
+    response = bedrock_agent_runtime_client.retrieve(
+        retrievalQuery={"text": query},
+        knowledgeBaseId=knowledge_base_id,
+            retrievalConfiguration={
+                "vectorSearchConfiguration": {"numberOfResults": number_of_results},
+            },
+        )
+    
+    # logger.info(f"response: {response}")
+    retrieval_results = response.get("retrievalResults", [])
+    # logger.info(f"retrieval_results: {retrieval_results}")
+
+    json_docs = []
+    for result in retrieval_results:
+        text = url = name = None
+        if "content" in result:
+            content = result["content"]
+            if "text" in content:
+                text = content["text"]
+
+        if "location" in result:
+            location = result["location"]
+            if "s3Location" in location:
+                uri = location["s3Location"]["uri"] if location["s3Location"]["uri"] is not None else ""
+                
+                name = uri.split("/")[-1]
+                # encoded_name = parse.quote(name)                
+                # url = f"{path}/{doc_prefix}{encoded_name}"
+                url = uri # TODO: add path and doc_prefix
+                
+            elif "webLocation" in location:
+                url = location["webLocation"]["url"] if location["webLocation"]["url"] is not None else ""
+                name = "WEB"
+
+        json_docs.append({
+            "contents": text,              
+            "reference": {
+                "url": url,                   
+                "title": name,
+                "from": "RAG"
+            }
+        })
+    logger.info(f"json_docs: {json_docs}")
+
+    return json.dumps(json_docs, ensure_ascii=False)
+ 
+def run_rag_with_knowledge_base(query, st):
+    global reference_docs, contentList
+    reference_docs = []
+    contentList = []
+
+    # retrieve
+    if debug_mode == "Enable":
+        st.info(f"RAG 검색을 수행합니다. 검색어: {query}")  
+
+    json_docs = retrieve(query)    
+    logger.info(f"json_docs: {json_docs}")
+
+    relevant_docs = json.loads(json_docs)
+
+    relevant_context = ""
+    for doc in relevant_docs:
+        relevant_context += f"{doc['contents']}\n\n"
+
+    # change format to document
+    st.info(f"{len(relevant_docs)}개의 관련된 문서를 얻었습니다.")
+
+    rag_chain = get_rag_prompt(query)
+                       
+    msg = ""    
+    try: 
+        result = rag_chain.invoke(
+            {
+                "question": query,
+                "context": relevant_context                
+            }
+        )
+        logger.info(f"result: {result}")
+
+        msg = result.content        
+        if msg.find('<result>')!=-1:
+            msg = msg[msg.find('<result>')+8:msg.find('</result>')]        
+               
+    except Exception:
+        err_msg = traceback.format_exc()
+        logger.info(f"error message: {err_msg}")                    
+        raise Exception ("Not able to request to LLM")
+    
+    if relevant_docs:
+        ref = "\n\n### Reference\n"
+        for i, doc in enumerate(relevant_docs):
+            page_content = doc["contents"][:100].replace("\n", "")
+            ref += f"{i+1}. [{doc["reference"]['title']}]({doc["reference"]['url']}), {page_content}...\n"    
+        logger.info(f"ref: {ref}")
+        msg += ref
+    
+    return msg, reference_docs
+
 def extract_thinking_tag(response, st):
     if response.find('<thinking>') != -1:
         status = response[response.find('<thinking>')+10:response.find('</thinking>')]
