@@ -103,6 +103,7 @@ def initialize_config():
         response = iam_client.get_role(RoleName=knowledge_base_role_name)
         knowledge_base_role = response['Role']['Arn']
         logger.info(f"knowledge_base_role: {knowledge_base_role}")
+        config['knowledge_base_role_name'] = knowledge_base_role_name
         config['knowledge_base_role'] = knowledge_base_role
     
     # secret_name
