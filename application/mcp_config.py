@@ -72,13 +72,13 @@ def get_cognito_config(cognito_config):
 def initialize_config():
     global config
 
-    # knowledge base name
+    # knowledge_base_name
     knowledge_base_name = config.get("knowledge_base_name", "")
     if not knowledge_base_name:
         knowledge_base_name = projectName
         config['knowledge_base_name'] = knowledge_base_name
 
-    # knowledge base id
+    # knowledge_base_id
     knowledge_base_id = config.get("knowledge_base_id", "")
     if not knowledge_base_id:
         # search knowledge base id using knowledge base name
@@ -92,6 +92,7 @@ def initialize_config():
         config['knowledge_base_name'] = projectName
         config['knowledge_base_id'] = knowledge_base_id
     
+    # knowledge_base_role
     knowledge_base_role = config.get("knowledge_base_role", "")
     if not knowledge_base_role:
         knowledge_base_role_name = f"AmazonBedrockExecutionRoleForKnowledgeBase_{projectName}"
@@ -102,13 +103,13 @@ def initialize_config():
         logger.info(f"knowledge_base_role: {knowledge_base_role}")
         config['knowledge_base_role'] = knowledge_base_role
     
-    # secret name
+    # secret_name
     if not "secret_name" in config:
         secret_name = f"{projectName}/credentials"
         config['secret_name'] = secret_name
         logger.info(f"secret_name: {secret_name}")
 
-    # cognito
+    # cognito_config
     cognito_config = config.get('cognito', {})
     if not cognito_config:
         cognito_config = get_cognito_config(cognito_config)
