@@ -85,7 +85,7 @@ with st.sidebar:
 
         # Change radio to checkbox
         mcp_options = [
-            "basic", "use_aws (docker)", "use_aws (streamable)", "kb-retriever (docker)", "kb-retriever (streamable)", "agentcore_coder", "사용자 설정"
+            "use_aws (docker)", "use_aws (streamable)", "kb-retriever (docker)", "kb-retriever (streamable)", "agentcore_coder", "사용자 설정"
         ]
         mcp_selections = {}
         default_selections = ["kb-retriever (streamable)"]
