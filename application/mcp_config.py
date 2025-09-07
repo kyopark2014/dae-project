@@ -228,11 +228,11 @@ def get_agent_runtime_arn(mcp_type: str):
 def load_config(mcp_type):
     if mcp_type == "use_aws (docker)":
         mcp_type = "use_aws_docker"
-    elif mcp_type == "use_aws (streamable)":
+    elif mcp_type == "use_aws (runtime)":
         mcp_type = "use_aws"
     elif mcp_type == "kb-retriever (docker)":
         mcp_type = "kb-retriever_docker"
-    elif mcp_type == "kb-retriever (streamable)":        
+    elif mcp_type == "kb-retriever (runtime)":        
         mcp_type = "kb-retriever"
     
     if mcp_type == "basic":

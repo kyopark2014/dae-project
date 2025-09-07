@@ -162,8 +162,6 @@ config = load_config()
 
 bedrock_region = config['region']
 projectName = config['projectName']
-s3_bucket = config['s3_bucket']
-path = config["sharing_url"] if "sharing_url" in config else None
 
 s3_prefix = 'docs'
 s3_image_prefix = 'images'
@@ -273,13 +271,13 @@ print(image_base64)
         byteImage = BytesIO(base64.b64decode(base64Img))
 
         image_name = generate_short_uuid()+'.png'
-        url = upload_to_s3(byteImage, image_name)
-        logger.info(f"url: {url}")
 
-        file_name = url[url.rfind('/')+1:]
-        logger.info(f"file_name: {file_name}")
+        os.makedirs('contents', exist_ok=True)
+        file_path = os.path.join('contents', image_name)
+        with open(file_path, 'wb') as f:
+            f.write(byteImage.getvalue())
 
-        image_url = path+'/'+s3_image_prefix+'/'+parse.quote(file_name)
+        image_url = file_path
         logger.info(f"image_url: {image_url}")
 
     return {
