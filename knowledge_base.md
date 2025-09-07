@@ -14,7 +14,9 @@ RAG에서 문서 Sync에 사용할 S3 Bucket을 생성합니다.
 
 <img width="937" height="461" alt="image" src="https://github.com/user-attachments/assets/2ff20e72-cd07-4e52-b9ec-da65e578cb50" />
 
-<img width="1024" height="468" alt="image" src="https://github.com/user-attachments/assets/6a722e6c-ea6a-4951-86ff-d0616f2f6dda" />
+<img width="1024" height="461" alt="image" src="https://github.com/user-attachments/assets/515f15ef-829d-40fb-9688-7cdb5742e646" />
+
+
 
 <img width="1002" height="373" alt="image" src="https://github.com/user-attachments/assets/21d261f4-48bf-4e65-8e25-4d5e6b40a233" />
 
