@@ -69,14 +69,54 @@ def get_cognito_config(cognito_config):
     
     return cognito_config
 
-# get config of cognito
-cognito_config = config.get('cognito', {})
-if not cognito_config:
-    cognito_config = get_cognito_config(cognito_config)
-    if 'cognito' not in config:
-        config['cognito'] = {}
-    config['cognito'].update(cognito_config)
+def initialize_config():
+    global config
 
+    # knowledge base name
+    knowledge_base_name = config.get("knowledge_base_name", "")
+    if not knowledge_base_name:
+        knowledge_base_name = projectName
+        config['knowledge_base_name'] = knowledge_base_name
+
+    # knowledge base id
+    knowledge_base_id = config.get("knowledge_base_id", "")
+    if not knowledge_base_id:
+        # search knowledge base id using knowledge base name
+        bedrock_agent_client = boto3.client("bedrock-agent")
+        response = bedrock_agent_client.list_knowledge_bases()
+        for knowledge_base in response["knowledgeBaseSummaries"]:
+            if knowledge_base["name"] == projectName:
+                knowledge_base_id = knowledge_base["knowledgeBaseId"]
+                break
+        logger.info(f"knowledge_base_id: {knowledge_base_id}")
+        config['knowledge_base_name'] = projectName
+        config['knowledge_base_id'] = knowledge_base_id
+    
+    knowledge_base_role = config.get("knowledge_base_role", "")
+    if not knowledge_base_role:
+        knowledge_base_role_name = f"AmazonBedrockExecutionRoleForKnowledgeBase_{projectName}"
+
+        iam_client = boto3.client('iam')
+        response = iam_client.get_role(RoleName=knowledge_base_role_name)
+        knowledge_base_role = response['Role']['Arn']
+        logger.info(f"knowledge_base_role: {knowledge_base_role}")
+        config['knowledge_base_role'] = knowledge_base_role
+    
+    # secret name
+    if not "secret_name" in config:
+        secret_name = f"{projectName}/credentials"
+        config['secret_name'] = secret_name
+        logger.info(f"secret_name: {secret_name}")
+
+    # cognito
+    cognito_config = config.get('cognito', {})
+    if not cognito_config:
+        cognito_config = get_cognito_config(cognito_config)
+        if 'cognito' not in config:
+            config['cognito'] = {}
+        config['cognito'].update(cognito_config)
+
+    # save config
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
 
