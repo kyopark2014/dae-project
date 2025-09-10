@@ -20,8 +20,9 @@ config_path = os.path.join(script_dir, "config.json")
 config = utils.load_config()
 logger.info(f"config: {config}")
 
-region = config["region"] if "region" in config else "us-west-2"
-projectName = config["projectName"] if "projectName" in config else "mcp"
+region = config.get("region", "us-west-2")
+projectName = config.get("projectName", "mcp")
+
 workingDir = os.path.dirname(os.path.abspath(__file__))
 logger.info(f"workingDir: {workingDir}")
 
@@ -235,7 +236,7 @@ def create_cognito_bearer_token(config):
     """Get a fresh bearer token from Cognito"""
     try:
         cognito_config = config['cognito']
-        region = cognito_config['region']
+        region = config['region']
         username = cognito_config['test_username']
         password = cognito_config['test_password']
 
