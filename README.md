@@ -1,4 +1,4 @@
-# AgentCore Runtime MCP
+# Runtime MCP
 
 ## MCP Tool Deployment
 
