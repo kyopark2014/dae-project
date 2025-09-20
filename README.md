@@ -9,7 +9,7 @@
 
 ### Agent Tool 배포를 위한 준비
 
-AgentCore로 배포하기 위해서는 MCP 설정시 [mcp_server_retrieve.py](./runtime/kb-retriever/mcp_server_retrieve.py)와 같이 host를 "0.0.0.0"으로 설정하고 외부로는 [Dockerfile](./kb-retriever/Dockerfile)와 같이 8000 포트를 expose 합니다.
+AgentCore로 배포하기 위해서는 MCP 설정시 [mcp_server_retrieve.py](./runtime/kb-retriever/mcp_server_retrieve.py)와 같이 host를 "0.0.0.0"으로 설정하고 외부로는 [Dockerfile](./runtime/kb-retriever/Dockerfile)와 같이 8000 포트를 expose 합니다.
 
 ```python
 mcp = FastMCP(
@@ -117,40 +117,6 @@ python test_mcp_remote.py
 
 <img width="600" alt="noname" src="https://github.com/user-attachments/assets/5bc2ce14-5ad5-43b2-a6f4-2a359b76bfe4" />
 
-
-
-### AgentCore CLI
-
-아래와 같이 [AgentCore Toolkit](https://github.com/aws/bedrock-agentcore-starter-toolkit)을 설치합니다. 
-
-```text
-pip install bedrock-agentcore-starter-toolkit
-```
-
-이후 아래와 설치를 준비합니다. 아래 명령어로 [Dockerfile](./Dockerfile)과 [.bedrock_agentcore.yaml](./.bedrock_agentcore.yaml)이 생성됩니다. 
-
-```text
-python setup.py
-```
-
-AgentCore의 상태는 아래 명령어로 확인할 수 있습니다.
-
-```text
-agentcore status
-```
-
-생성된 Docker 파일을 배포합니다.
-
-```text
-agentcore launch
-```
-
-이후 아래와 같이 동작을 확인할 수 있습니다.
-
-```text
-# Invoke your deployed agent
-agentcore invoke '{"prompt": "Hello from Bedrock AgentCore!"}'
-```
 
 ## 실행 결과
 
