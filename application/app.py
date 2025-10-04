@@ -8,6 +8,7 @@ import os
 import pwd 
 import asyncio
 import uuid
+import claude_agent
 
 logging.basicConfig(
     level=logging.INFO,  # Default to INFO level
@@ -92,6 +93,7 @@ with st.sidebar:
         
         if mode=='Agent' or mode=='Agent (Chat)':
             agentType = st.radio(
+                # label="Agent 타입을 선택하세요. ",options=["langgraph", "strands", "claude"], index=0
                 label="Agent 타입을 선택하세요. ",options=["langgraph", "strands"], index=0
             )
 
@@ -312,13 +314,20 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                         history_mode=history_mode, 
                         containers=containers))
 
-                else:
+                elif agentType == "strands":
                     response, image_url = asyncio.run(chat.run_strands_agent(
                         query=prompt, 
                         strands_tools=[], 
                         mcp_servers=mcp_servers, 
                         history_mode=history_mode, 
                         containers=containers))
+                
+                # else:
+                #     response, image_url = asyncio.run(claude_agent.run_claude_agent(
+                #         prompt=prompt, 
+                #         mcp_servers=mcp_servers, 
+                #         history_mode=history_mode, 
+                #         containers=containers))
         
             st.session_state.messages.append({
                 "role": "assistant", 
