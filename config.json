@@ -3,7 +3,7 @@
   "projectName": "dae",
   "accountId": "262976740991",
   "knowledge_base_name": "dae",
-  "knowledge_base_id": "3MPQ91GPOF",
+  "knowledge_base_id": "",
   "knowledge_base_role_name": "AmazonBedrockExecutionRoleForKnowledgeBase_dae",
   "knowledge_base_role": "arn:aws:iam::262976740991:role/service-role/AmazonBedrockExecutionRoleForKnowledgeBase_dae",
   "secret_name": "dae/credentials",

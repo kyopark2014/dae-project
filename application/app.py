@@ -88,7 +88,7 @@ with st.sidebar:
             "use_aws (docker)", "use_aws (runtime)", "kb-retriever (docker)", "kb-retriever (runtime)", "agentcore_coder", "사용자 설정"
         ]
         mcp_selections = {}
-        default_selections = ["kb-retriever (runtime)"]
+        default_selections = ["use_aws (runtime)"]
         
         if mode=='Agent' or mode=='Agent (Chat)':
             agentType = st.radio(

@@ -12,6 +12,9 @@ import utils
 import strands_agent
 import langgraph_agent
 import mcp_config
+import agentcore_memory
+import random
+import string
 
 from io import BytesIO
 from PIL import Image
@@ -41,6 +44,7 @@ class SimpleChatMemory:
     
     def clear(self):
         self.messages = []
+        
 from tavily import TavilyClient  
 from urllib import parse
 from pydantic.v1 import BaseModel, Field
@@ -66,28 +70,52 @@ logging.basicConfig(
 
 logger = logging.getLogger("chat")
 
-mcp_config.initialize_config()
-
 reasoning_mode = 'Disable'
 debug_messages = []  # List to store debug messages
 
 config = utils.load_config()
-print(f"config: {config}")
+logger.info(f"config: {config}")
 
-region = config.get("region", "us-west-2")
-projectName = config.get("projectName", "dae")
+bedrock_region = config["region"] if "region" in config else "us-west-2"
+projectName = config["projectName"] if "projectName" in config else "mcp-rag"
+accountId = config["accountId"] if "accountId" in config else None
 
-accountId = config.get("accountId", None)
 if accountId is None:
     raise Exception ("No accountId")
+region = config["region"] if "region" in config else "us-west-2"
+logger.info(f"region: {region}")
 
 s3_prefix = 'docs'
 s3_image_prefix = 'images'
 
-s3_bucket = config.get("s3_bucket", None)
+knowledge_base_role = config["knowledge_base_role"] if "knowledge_base_role" in config else None
+if knowledge_base_role is None:
+    raise Exception ("No Knowledge Base Role")
+
+collectionArn = config["collectionArn"] if "collectionArn" in config else None
+if collectionArn is None:
+    raise Exception ("No collectionArn")
+
+vectorIndexName = projectName
+
+opensearch_url = config["opensearch_url"] if "opensearch_url" in config else None
+if opensearch_url is None:
+    raise Exception ("No OpenSearch URL")
+
+path = config["sharing_url"] if "sharing_url" in config else None
+if path is None:
+    raise Exception ("No Sharing URL")
+
+s3_arn = config["s3_arn"] if "s3_arn" in config else None
+if s3_arn is None:
+    raise Exception ("No S3 ARN")
+
+s3_bucket = config["s3_bucket"] if "s3_bucket" in config else None
 if s3_bucket is None:
-    logger.warning("No s3_bucket configured, some features may not work")
-    s3_bucket = f"{projectName}-storage"  # Use default bucket name
+    raise Exception ("No storage!")
+
+knowledge_base_name = projectName
+numberOfDocs = 4
 
 MSG_LENGTH = 100    
 
@@ -236,7 +264,7 @@ def create_object(key, body):
     if aws_access_key and aws_secret_key:
         s3_client = boto3.client(
             service_name='s3',
-            region_name=region,
+            region_name=bedrock_region,
             aws_access_key_id=aws_access_key,
             aws_secret_access_key=aws_secret_key,
             aws_session_token=aws_session_token,
@@ -244,7 +272,7 @@ def create_object(key, body):
     else:
         s3_client = boto3.client(
             service_name='s3',
-            region_name=region,
+            region_name=bedrock_region,
         )
         
     s3_client.put_object(
@@ -261,7 +289,7 @@ def updata_object(key, body, direction):
     if aws_access_key and aws_secret_key:
         s3_client = boto3.client(
             service_name='s3',
-            region_name=region,
+            region_name=bedrock_region,
             aws_access_key_id=aws_access_key,
             aws_secret_access_key=aws_secret_key,
             aws_session_token=aws_session_token,
@@ -269,7 +297,7 @@ def updata_object(key, body, direction):
     else:
         s3_client = boto3.client(
             service_name='s3',
-            region_name=region,
+            region_name=bedrock_region,
         )
 
     try:
@@ -316,7 +344,7 @@ def get_chat(extended_thinking):
     profile = models[selected_chat]
     # print('profile: ', profile)
         
-    region =  profile['bedrock_region']
+    bedrock_region =  profile['bedrock_region']
     modelId = profile['model_id']
     model_type = profile['model_type']
     if model_type == 'claude':
@@ -325,7 +353,7 @@ def get_chat(extended_thinking):
         maxOutputTokens = 5120 # 5k
     number_of_models = len(models)
 
-    logger.info(f"LLM: {selected_chat}, region: {region}, modelId: {modelId}, model_type: {model_type}")
+    logger.info(f"LLM: {selected_chat}, bedrock_region: {bedrock_region}, modelId: {modelId}, model_type: {model_type}")
 
     if profile['model_type'] == 'nova':
         STOP_SEQUENCE = '"\n\n<thinking>", "\n<thinking>", " <thinking>"'
@@ -338,7 +366,7 @@ def get_chat(extended_thinking):
     if aws_access_key and aws_secret_key:
         boto3_bedrock = boto3.client(
             service_name='bedrock-runtime',
-            region_name=region,
+            region_name=bedrock_region,
             aws_access_key_id=aws_access_key,
             aws_secret_access_key=aws_secret_key,
             aws_session_token=aws_session_token,
@@ -351,7 +379,7 @@ def get_chat(extended_thinking):
     else:
         boto3_bedrock = boto3.client(
             service_name='bedrock-runtime',
-            region_name=region,
+            region_name=bedrock_region,
             config=Config(
                 retries = {
                     'max_attempts': 30
@@ -385,15 +413,15 @@ def get_chat(extended_thinking):
         parameters = {
             "max_tokens":maxOutputTokens,     
             "temperature":0.1,
-            "top_k":250,
-            "top_p":0.9,
+            "top_p":0.9
+            # Note: stream parameter removed for invoke requests
         }
 
     chat = ChatBedrock(   # new chat model
         model_id=modelId,
         client=boto3_bedrock, 
         model_kwargs=parameters,
-        region_name=region
+        region_name=bedrock_region
     )
     
     if multi_region=='Enable':
@@ -404,6 +432,14 @@ def get_chat(extended_thinking):
         selected_chat = 0
 
     return chat
+
+def print_doc(i, doc):
+    if len(doc.page_content)>=100:
+        text = doc.page_content[:100]
+    else:
+        text = doc.page_content
+            
+    logger.info(f"{i}: {text}, metadata:{doc.metadata}")
 
 def translate_text(text):
     chat = get_chat(extended_thinking=reasoning_mode)
@@ -477,6 +513,90 @@ def check_grammer(text):
 
 reference_docs = []
 
+# api key to get weather information in agent
+if aws_access_key and aws_secret_key:
+    secretsmanager = boto3.client(
+        service_name='secretsmanager',
+        region_name=bedrock_region,
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=aws_secret_key,
+        aws_session_token=aws_session_token,
+    )
+else:
+    secretsmanager = boto3.client(
+        service_name='secretsmanager',
+        region_name=bedrock_region,
+    )
+
+# api key for weather
+def get_weather_api_key():
+    weather_api_key = ""
+    try:
+        get_weather_api_secret = secretsmanager.get_secret_value(
+            SecretId=f"openweathermap-{projectName}"
+        )
+        #print('get_weather_api_secret: ', get_weather_api_secret)
+        secret = json.loads(get_weather_api_secret['SecretString'])
+        #print('secret: ', secret)
+        weather_api_key = secret['weather_api_key']
+
+    except Exception as e:
+        logger.info(f"weather api key is required: {e}")
+        pass
+
+    return weather_api_key
+
+def get_langsmith_api_key():
+    # api key to use LangSmith
+    langsmith_api_key = langchain_project = ""
+    try:
+        get_langsmith_api_secret = secretsmanager.get_secret_value(
+            SecretId=f"langsmithapikey-{projectName}"
+        )
+        #print('get_langsmith_api_secret: ', get_langsmith_api_secret)
+        secret = json.loads(get_langsmith_api_secret['SecretString'])
+        #print('secret: ', secret)
+        langsmith_api_key = secret['langsmith_api_key']
+        langchain_project = secret['langchain_project']
+    except Exception as e:
+        logger.info(f"langsmith api key is required: {e}")
+        pass
+
+    return langsmith_api_key, langchain_project
+
+langsmith_api_key, langchain_project = get_langsmith_api_key()
+if langsmith_api_key and langchain_project:
+    os.environ["LANGCHAIN_API_KEY"] = langsmith_api_key
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ["LANGCHAIN_PROJECT"] = langchain_project
+
+def tavily_search(query, k):
+    docs = []    
+    try:
+        tavily_client = TavilyClient(api_key=utils.tavily_key)
+        response = tavily_client.search(query, max_results=k)
+        # print('tavily response: ', response)
+            
+        for r in response["results"]:
+            name = r.get("title")
+            if name is None:
+                name = 'WWW'
+            
+            docs.append(
+                Document(
+                    page_content=r.get("content"),
+                    metadata={
+                        'name': name,
+                        'url': r.get("url"),
+                        'from': 'tavily'
+                    },
+                )
+            )                   
+    except Exception as e:
+        logger.info(f"Exception: {e}")
+
+    return docs
+
 def isKorean(text):
     # check korean
     pattern_hangul = re.compile('[\u3131-\u3163\uac00-\ud7a3]+')
@@ -522,11 +642,11 @@ def traslation(chat, text, input_language, output_language):
 def get_parallel_processing_chat(models, selected):
     global model_type
     profile = models[selected]
-    region =  profile['region']
+    bedrock_region =  profile['bedrock_region']
     modelId = profile['model_id']
     model_type = profile['model_type']
     maxOutputTokens = 4096
-    logger.info(f'selected_chat: {selected}, region: {region}, modelId: {modelId}, model_type: {model_type}')
+    logger.info(f'selected_chat: {selected}, bedrock_region: {bedrock_region}, modelId: {modelId}, model_type: {model_type}')
 
     if profile['model_type'] == 'nova':
         STOP_SEQUENCE = '"\n\n<thinking>", "\n<thinking>", " <thinking>"'
@@ -539,7 +659,7 @@ def get_parallel_processing_chat(models, selected):
     if aws_access_key and aws_secret_key:
         boto3_bedrock = boto3.client(
             service_name='bedrock-runtime',
-            region_name=region,
+            region_name=bedrock_region,
             aws_access_key_id=aws_access_key,
             aws_secret_access_key=aws_secret_key,
             aws_session_token=aws_session_token,
@@ -552,7 +672,7 @@ def get_parallel_processing_chat(models, selected):
     else:
         boto3_bedrock = boto3.client(
             service_name='bedrock-runtime',
-            region_name=region,
+            region_name=bedrock_region,
             config=Config(
                 retries = {
                     'max_attempts': 30
@@ -572,8 +692,8 @@ def get_parallel_processing_chat(models, selected):
         parameters = {
             "max_tokens":maxOutputTokens,     
             "temperature":0.1,
-            "top_k":250,
-            "top_p":0.9,
+            "top_p":0.9
+            # Note: stream parameter removed for invoke requests
         }
 
     chat = ChatBedrock(   # new chat model
@@ -584,6 +704,87 @@ def get_parallel_processing_chat(models, selected):
     
     return chat
 
+def print_doc(i, doc):
+    if len(doc.page_content)>=100:
+        text = doc.page_content[:100]
+    else:
+        text = doc.page_content
+            
+    logger.info(f"{i}: {text}, metadata:{doc.metadata}")
+
+def grade_document_based_on_relevance(conn, question, doc, models, selected):     
+    chat = get_parallel_processing_chat(models, selected)
+    retrieval_grader = get_retrieval_grader(chat)
+    score = retrieval_grader.invoke({"question": question, "document": doc.page_content})
+    # print(f"score: {score}")
+    
+    grade = score.binary_score    
+    if grade == 'yes':
+        logger.info(f"---GRADE: DOCUMENT RELEVANT---")
+        conn.send(doc)
+    else:  # no
+        logger.info(f"--GRADE: DOCUMENT NOT RELEVANT---")
+        conn.send(None)
+    
+    conn.close()
+
+def grade_documents_using_parallel_processing(question, documents):
+    global selected_chat
+    
+    filtered_docs = []    
+
+    processes = []
+    parent_connections = []
+    
+    for i, doc in enumerate(documents):
+        #print(f"grading doc[{i}]: {doc.page_content}")        
+        parent_conn, child_conn = Pipe()
+        parent_connections.append(parent_conn)
+            
+        process = Process(target=grade_document_based_on_relevance, args=(child_conn, question, doc, models, selected_chat))
+        processes.append(process)
+        
+        selected_chat = selected_chat + 1
+        if selected_chat == number_of_models:
+            selected_chat = 0
+    for process in processes:
+        process.start()
+            
+    for parent_conn in parent_connections:
+        relevant_doc = parent_conn.recv()
+
+        if relevant_doc is not None:
+            filtered_docs.append(relevant_doc)
+
+    for process in processes:
+        process.join()
+    
+    return filtered_docs
+
+class GradeDocuments(BaseModel):
+    """Binary score for relevance check on retrieved documents."""
+
+    binary_score: str = Field(description="Documents are relevant to the question, 'yes' or 'no'")
+
+def get_retrieval_grader(chat):
+    system = """You are a grader assessing relevance of a retrieved document to a user question. \n 
+    If the document contains keyword(s) or semantic meaning related to the question, grade it as relevant. \n
+    Give a binary score 'yes' or 'no' score to indicate whether the document is relevant to the question."""
+
+    grade_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system),
+            ("human", "Retrieved document: \n\n {document} \n\n User question: {question}"),
+        ]
+    )
+    
+    # from langchain_core.output_parsers import PydanticOutputParser  # not supported for Nova
+    # parser = PydanticOutputParser(pydantic_object=GradeDocuments)
+    # retrieval_grader = grade_prompt | chat | parser
+
+    structured_llm_grader = chat.with_structured_output(GradeDocuments)
+    retrieval_grader = grade_prompt | structured_llm_grader
+    return retrieval_grader
 
 def show_extended_thinking(st, result):
     # logger.info(f"result: {result}")
@@ -592,10 +793,45 @@ def show_extended_thinking(st, result):
             thinking = result.response_metadata["thinking"]["text"]
             st.info(thinking)
 
+def grade_documents(question, documents):
+    logger.info(f"###### grade_documents ######")
+    
+    logger.info(f"start grading...")
+    
+    filtered_docs = []
+    if multi_region == 'Enable':  # parallel processing        
+        filtered_docs = grade_documents_using_parallel_processing(question, documents)
+
+    else:
+        # Score each doc    
+        llm = get_chat(extended_thinking="Disable")
+        retrieval_grader = get_retrieval_grader(llm)
+        for i, doc in enumerate(documents):
+            # print('doc: ', doc)
+            print_doc(i, doc)
+            
+            score = retrieval_grader.invoke({"question": question, "document": doc.page_content})
+            # print("score: ", score)
+            
+            grade = score.binary_score
+            # print("grade: ", grade)
+            # Document relevant
+            if grade.lower() == "yes":
+                logger.info(f"---GRADE: DOCUMENT RELEVANT---")
+                filtered_docs.append(doc)
+            # Document not relevant
+            else:
+                logger.info(f"---GRADE: DOCUMENT NOT RELEVANT---")
+                # We do not include the document in filtered_docs
+                # We set a flag to indicate that we want to run web search
+                continue
+
+    return filtered_docs
+
 ####################### LangChain #######################
 # General Conversation
 #########################################################
-def general_conversation(query):
+def general_conversation(query, st):
     global memory_chain
     initiate()  # Initialize memory_chain
     llm = get_chat(extended_thinking=reasoning_mode)
@@ -619,22 +855,213 @@ def general_conversation(query):
     else:
         history = []
 
-    chain = prompt | llm | StrOutputParser()
-    try: 
-        stream = chain.stream(
-            {
-                "history": history,
-                "input": query,
-            }
-        )  
-        logger.info(f"stream: {stream}")
+    if model_type == 'openai':
+        # For OpenAI models, use invoke instead of stream to avoid parsing issues
+        chain = prompt | llm
+        try: 
+            result = chain.invoke(
+                {
+                    "history": history,
+                    "input": query,
+                }
+            )  
+            logger.info(f"result: {result}")
             
-    except Exception:
-        err_msg = traceback.format_exc()
-        logger.info(f"error message: {err_msg}")      
-        raise Exception ("Not able to request to LLM: "+err_msg)
+            content = result.content
+            if '<reasoning>' in content and '</reasoning>' in content:
+                # Extract reasoning content and show it in st.info
+                reasoning_start = content.find('<reasoning>') + 11  # Length of '<reasoning>'
+                reasoning_end = content.find('</reasoning>')
+                reasoning_content = content[reasoning_start:reasoning_end]
+                st.info(f"{reasoning_content}")
+                
+                # Extract main content after reasoning tag
+                content = content.split('</reasoning>', 1)[1] if '</reasoning>' in content else content
+            stream = iter([content])
+            
+        except Exception:
+            err_msg = traceback.format_exc()
+            logger.info(f"error message: {err_msg}")      
+            raise Exception ("Not able to request to LLM: "+err_msg)
+    else:
+        # For other models, use streaming
+        chain = prompt | llm | StrOutputParser()
+        try: 
+            stream = chain.stream(
+                {
+                    "history": history,
+                    "input": query,
+                }
+            )  
+            logger.info(f"stream: {stream}")
+                
+        except Exception:
+            err_msg = traceback.format_exc()
+            logger.info(f"error message: {err_msg}")      
+            raise Exception ("Not able to request to LLM: "+err_msg)
         
     return stream
+
+def upload_to_s3(file_bytes, file_name):
+    """
+    Upload a file to S3 and return the URL
+    """
+    try:
+        if aws_access_key and aws_secret_key:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region,
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                aws_session_token=aws_session_token,
+            )
+        else:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region,
+            )
+
+        # Generate a unique file name to avoid collisions
+        #timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        #unique_id = str(uuid.uuid4())[:8]
+        #s3_key = f"uploaded_images/{timestamp}_{unique_id}_{file_name}"
+
+        content_type = utils.get_contents_type(file_name)       
+        logger.info(f"content_type: {content_type}") 
+
+        if content_type == "image/jpeg" or content_type == "image/png":
+            s3_key = f"{s3_image_prefix}/{file_name}"
+        else:
+            s3_key = f"{s3_prefix}/{file_name}"
+        
+        user_meta = {  # user-defined metadata
+            "content_type": content_type,
+            "model_name": model_name
+        }
+        
+        response = s3_client.put_object(
+            Bucket=s3_bucket, 
+            Key=s3_key, 
+            ContentType=content_type,
+            Metadata = user_meta,
+            Body=file_bytes            
+        )
+        logger.info(f"upload response: {response}")
+
+        #url = f"https://{s3_bucket}.s3.amazonaws.com/{s3_key}"
+        url = path+'/'+s3_image_prefix+'/'+parse.quote(file_name)
+        return url
+    
+    except Exception as e:
+        err_msg = f"Error uploading to S3: {str(e)}"
+        logger.info(f"{err_msg}")
+        return None
+
+def upload_to_s3_artifacts(file_bytes, file_name):
+    """
+    Upload a file to S3 and return the URL
+    """
+    try:
+        if aws_access_key and aws_secret_key:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region,
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                aws_session_token=aws_session_token
+            )
+        else:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region
+        )
+
+        content_type = utils.get_contents_type(file_name)       
+        logger.info(f"content_type: {content_type}") 
+
+        s3_key = f"artifacts/{file_name}"
+        
+        user_meta = {  # user-defined metadata
+            "content_type": content_type,
+            "model_name": model_name
+        }
+        
+        response = s3_client.put_object(
+            Bucket=s3_bucket, 
+            Key=s3_key, 
+            ContentType=content_type,
+            Metadata = user_meta,
+            Body=file_bytes            
+        )
+        logger.info(f"upload response: {response}")
+
+        url = path+'/artifacts/'+parse.quote(file_name)
+        return url
+    
+    except Exception as e:
+        err_msg = f"Error uploading to S3: {str(e)}"
+        logger.info(f"{err_msg}")
+        return None
+
+def extract_and_display_s3_images(text, s3_client):
+    """
+    Extract S3 URLs from text, download images, and return them for display
+    """
+    s3_pattern = r"https://[\w\-\.]+\.s3\.amazonaws\.com/[\w\-\./]+"
+    s3_urls = re.findall(s3_pattern, text)
+
+    images = []
+    for url in s3_urls:
+        try:
+            bucket = url.split(".s3.amazonaws.com/")[0].split("//")[1]
+            key = url.split(".s3.amazonaws.com/")[1]
+
+            response = s3_client.get_object(Bucket=bucket, Key=key)
+            image_data = response["Body"].read()
+
+            image = Image.open(BytesIO(image_data))
+            images.append(image)
+
+        except Exception as e:
+            err_msg = f"Error downloading image from S3: {str(e)}"
+            logger.info(f"{err_msg}")
+            continue
+
+    return images
+
+# load csv documents from s3
+def load_csv_document(s3_file_name):
+    s3r = boto3.resource("s3")
+    doc = s3r.Object(s3_bucket, s3_prefix+'/'+s3_file_name)
+
+    lines = doc.get()['Body'].read().decode('utf-8').split('\n')   # read csv per line
+    logger.info(f"prelinspare: {len(lines)}")
+        
+    columns = lines[0].split(',')  # get columns
+    #columns = ["Category", "Information"]  
+    #columns_to_metadata = ["type","Source"]
+    logger.info(f"columns: {columns}")
+    
+    docs = []
+    n = 0
+    for row in csv.DictReader(lines, delimiter=',',quotechar='"'):
+        # print('row: ', row)
+        #to_metadata = {col: row[col] for col in columns_to_metadata if col in row}
+        values = {k: row[k] for k in columns if k in row}
+        content = "\n".join(f"{k.strip()}: {v.strip()}" for k, v in values.items())
+        doc = Document(
+            page_content=content,
+            metadata={
+                'name': s3_file_name,
+                'row': n+1,
+            }
+            #metadata=to_metadata
+        )
+        docs.append(doc)
+        n = n+1
+    logger.info(f"docs[0]: {docs[0]}")
+
+    return docs
 
 def get_summary(docs):    
     llm = get_chat(extended_thinking=reasoning_mode)
@@ -674,12 +1101,88 @@ def get_summary(docs):
     
     return summary
 
+# load documents from s3 for pdf and txt
+def load_document(file_type, s3_file_name):
+    s3r = boto3.resource("s3")
+    doc = s3r.Object(s3_bucket, s3_prefix+'/'+s3_file_name)
+    logger.info(f"s3_bucket: {s3_bucket}, s3_prefix: {s3_prefix}, s3_file_name: {s3_file_name}")
+    
+    contents = ""
+    if file_type == 'pdf':
+        contents = doc.get()['Body'].read()
+        reader = PyPDF2.PdfReader(BytesIO(contents))
+        
+        raw_text = []
+        for page in reader.pages:
+            raw_text.append(page.extract_text())
+        contents = '\n'.join(raw_text)    
+        
+    elif file_type == 'txt' or file_type == 'md':        
+        contents = doc.get()['Body'].read().decode('utf-8')
+        
+    logger.info(f"contents: {contents}")
+    new_contents = str(contents).replace("\n"," ") 
+    logger.info(f"length: {len(new_contents)}")
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=100,
+        separators=["\n\n", "\n", ".", " ", ""],
+        length_function = len,
+    ) 
+    texts = text_splitter.split_text(new_contents) 
+    if texts:
+        logger.info(f"exts[0]: {texts[0]}")
+    
+    return texts
+
+def summary_of_code(code, mode):
+    if mode == 'py':
+        system = (
+            "다음의 <article> tag에는 python code가 있습니다."
+            "code의 전반적인 목적에 대해 설명하고, 각 함수의 기능과 역할을 자세하게 한국어 500자 이내로 설명하세요."
+        )
+    elif mode == 'js':
+        system = (
+            "다음의 <article> tag에는 node.js code가 있습니다." 
+            "code의 전반적인 목적에 대해 설명하고, 각 함수의 기능과 역할을 자세하게 한국어 500자 이내로 설명하세요."
+        )
+    else:
+        system = (
+            "다음의 <article> tag에는 code가 있습니다."
+            "code의 전반적인 목적에 대해 설명하고, 각 함수의 기능과 역할을 자세하게 한국어 500자 이내로 설명하세요."
+        )
+    
+    human = "<article>{code}</article>"
+    
+    prompt = ChatPromptTemplate.from_messages([("system", system), ("human", human)])
+    # print('prompt: ', prompt)
+    
+    llm = get_chat(extended_thinking=reasoning_mode)
+
+    chain = prompt | llm    
+    try: 
+        result = chain.invoke(
+            {
+                "code": code
+            }
+        )
+        
+        summary = result.content
+        logger.info(f"result of code summarization: {summary}")
+    except Exception:
+        err_msg = traceback.format_exc()
+        logger.info(f"error message: {err_msg}")        
+        raise Exception ("Not able to request to LLM")
+    
+    return summary
+
 def summary_image(img_base64, instruction):      
     llm = get_chat(extended_thinking=reasoning_mode)
 
     if instruction:
         logger.info(f"instruction: {instruction}")
-        query = f"{instruction}. <result> tag를 붙여주세요. 한국어로 답변하세요."
+        query = f"{instruction}. <result> tag를 붙여주세요."
         
     else:
         query = "이미지가 의미하는 내용을 풀어서 자세히 알려주세요. markdown 포맷으로 답변을 작성합니다."
@@ -757,8 +1260,197 @@ def extract_text(img_base64):
 
 fileId = uuid.uuid4().hex
 # print('fileId: ', fileId)
+def get_summary_of_uploaded_file(file_name, st):
+    file_type = file_name[file_name.rfind('.')+1:len(file_name)]            
+    logger.info(f"file_type: {file_type}")
+    
+    if file_type == 'csv':
+        docs = load_csv_document(file_name)
+        contexts = []
+        for doc in docs:
+            contexts.append(doc.page_content)
+        logger.info(f"contexts: {contexts}")
+    
+        msg = get_summary(contexts)
 
-def summarize_image(image_content, prompt, st):
+    elif file_type == 'pdf' or file_type == 'txt' or file_type == 'md' or file_type == 'pptx' or file_type == 'docx':
+        texts = load_document(file_type, file_name)
+
+        if len(texts):
+            docs = []
+            for i in range(len(texts)):
+                docs.append(
+                    Document(
+                        page_content=texts[i],
+                        metadata={
+                            'name': file_name,
+                            # 'page':i+1,
+                            'url': path+'/'+doc_prefix+parse.quote(file_name)
+                        }
+                    )
+                )
+            logger.info(f"docs[0]: {docs[0]}") 
+            logger.info(f"docs size: {len(docs)}")
+
+            contexts = []
+            for doc in docs:
+                contexts.append(doc.page_content)
+            logger.info(f"contexts: {contexts}")
+
+            msg = get_summary(contexts)
+        else:
+            msg = "문서 로딩에 실패하였습니다."
+        
+    elif file_type == 'py' or file_type == 'js':
+        s3r = boto3.resource("s3")
+        doc = s3r.Object(s3_bucket, s3_prefix+'/'+file_name)
+        
+        contents = doc.get()['Body'].read().decode('utf-8')
+        
+        #contents = load_code(file_type, object)                
+                        
+        msg = summary_of_code(contents, file_type)                  
+        
+    elif file_type == 'png' or file_type == 'jpeg' or file_type == 'jpg':
+        logger.info(f"multimodal: {file_name}")
+        
+        if aws_access_key and aws_secret_key:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region,
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                aws_session_token=aws_session_token,
+            )
+        else:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region,
+            )
+
+        if debug_mode=="Enable":
+            status = "이미지를 가져옵니다."
+            logger.info(f"status: {status}")
+            st.info(status)
+            
+        image_obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_prefix+'/'+file_name)
+        # print('image_obj: ', image_obj)
+        
+        image_content = image_obj['Body'].read()
+        img = Image.open(BytesIO(image_content))
+        
+        width, height = img.size 
+        logger.info(f"width: {width}, height: {height}, size: {width*height}")
+        
+        # Image resizing and size verification
+        isResized = False
+        max_size = 5 * 1024 * 1024  # 5MB in bytes
+        
+        # Initial resizing (based on pixel count)
+        while(width*height > 2000000):  # Limit to approximately 2M pixels
+            width = int(width/2)
+            height = int(height/2)
+            isResized = True
+            logger.info(f"width: {width}, height: {height}, size: {width*height}")
+        
+        if isResized:
+            img = img.resize((width, height))
+        
+        # Base64 크기 확인 및 추가 리사이징
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            buffer = BytesIO()
+            img.save(buffer, format="PNG", optimize=True)
+            img_bytes = buffer.getvalue()
+            img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+            
+            # Base64 크기 확인 (실제 전송될 크기)
+            base64_size = len(img_base64.encode('utf-8'))
+            logger.info(f"attempt {attempt + 1}: base64_size = {base64_size} bytes")
+            
+            if base64_size <= max_size:
+                break
+            else:
+                # 크기가 여전히 크면 더 작게 리사이징
+                width = int(width * 0.8)
+                height = int(height * 0.8)
+                img = img.resize((width, height))
+                logger.info(f"resizing to {width}x{height} due to size limit")
+        
+        if base64_size > max_size:
+            logger.warning(f"Image still too large after {max_attempts} attempts: {base64_size} bytes")
+            raise Exception(f"이미지 크기가 너무 큽니다. 5MB 이하의 이미지를 사용해주세요.")
+               
+        # extract text from the image
+        if debug_mode=="Enable":
+            status = "이미지에서 텍스트를 추출합니다."
+            logger.info(f"status: {status}")
+            st.info(status)
+        
+        text = extract_text(img_base64)
+        # print('extracted text: ', text)
+
+        if text.find('<result>') != -1:
+            extracted_text = text[text.find('<result>')+8:text.find('</result>')] # remove <result> tag
+            # print('extracted_text: ', extracted_text)
+        else:
+            extracted_text = text
+
+        if debug_mode=="Enable":
+            logger.info(f"### 추출된 텍스트\n\n{extracted_text}")
+            print('status: ', status)
+            st.info(status)
+    
+        if debug_mode=="Enable":
+            status = "이미지의 내용을 분석합니다."
+            logger.info(f"status: {status}")
+            st.info(status)
+
+        image_summary = summary_image(img_base64, "")
+        logger.info(f"image summary: {image_summary}")
+            
+        if len(extracted_text) > 10:
+            contents = f"## 이미지 분석\n\n{image_summary}\n\n## 추출된 텍스트\n\n{extracted_text}"
+        else:
+            contents = f"## 이미지 분석\n\n{image_summary}"
+        logger.info(f"image content: {contents}")
+
+        msg = contents
+
+    global fileId
+    fileId = uuid.uuid4().hex
+    # print('fileId: ', fileId)
+
+    return msg
+
+####################### LangChain #######################
+# Image Summarization
+#########################################################
+def get_image_summarization(object_name, prompt, st):
+    # load image
+    if aws_access_key and aws_secret_key:
+        s3_client = boto3.client(
+            service_name='s3',
+            region_name=bedrock_region,
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            aws_session_token=aws_session_token,
+        )
+    else:
+        s3_client = boto3.client(
+            service_name='s3',
+            region_name=bedrock_region,
+        )
+
+    if debug_mode=="Enable":
+        status = "이미지를 가져옵니다."
+        logger.info(f"status: {status}")
+        st.info(status)
+                
+    image_obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_image_prefix+'/'+object_name)
+    # print('image_obj: ', image_obj)
+    
+    image_content = image_obj['Body'].read()
     img = Image.open(BytesIO(image_content))
     
     width, height = img.size 
@@ -834,14 +1526,14 @@ def summarize_image(image_content, prompt, st):
         image_summary = image_summary[image_summary.find('<result>')+8:image_summary.find('</result>')]
     logger.info(f"image summary: {image_summary}")
             
-    # if len(extracted_text) > 10:
-    #     contents = f"## 이미지 분석\n\n{image_summary}\n\n## 추출된 텍스트\n\n{extracted_text}"
-    # else:
-    #     contents = f"## 이미지 분석\n\n{image_summary}"
-    contents = f"## 이미지 분석\n\n{image_summary}"
+    if len(extracted_text) > 10:
+        contents = f"## 이미지 분석\n\n{image_summary}\n\n## 추출된 텍스트\n\n{extracted_text}"
+    else:
+        contents = f"## 이미지 분석\n\n{image_summary}"
     logger.info(f"image contents: {contents}")
 
     return contents
+
 
 ####################### Bedrock Agent #######################
 # RAG using Lambda
@@ -874,7 +1566,8 @@ def get_rag_prompt(text):
             "{context}"
         ) 
         
-    elif model_type == "claude":
+    # elif model_type == "claude":
+    else: 
         if isKorean(text)==True:
             system = (
                 "당신의 이름은 서연이고, 질문에 대해 친절하게 답변하는 사려깊은 인공지능 도우미입니다."
@@ -909,56 +1602,65 @@ def get_rag_prompt(text):
 
     return rag_chain
  
-bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime", region_name=region)
-knowledge_base_id = config['knowledge_base_id']
-number_of_results = 4
-def retrieve(query):
-    response = bedrock_agent_runtime_client.retrieve(
-        retrievalQuery={"text": query},
-        knowledgeBaseId=knowledge_base_id,
-            retrievalConfiguration={
-                "vectorSearchConfiguration": {"numberOfResults": number_of_results},
-            },
+def retrieve_knowledge_base(query):
+    if aws_access_key and aws_secret_key:
+        lambda_client = boto3.client(
+            service_name='lambda',
+            region_name=bedrock_region,
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            aws_session_token=aws_session_token,
         )
-    
-    # logger.info(f"response: {response}")
-    retrieval_results = response.get("retrievalResults", [])
-    # logger.info(f"retrieval_results: {retrieval_results}")
+    else:
+        lambda_client = boto3.client(
+            service_name='lambda',
+            region_name=bedrock_region,
+        )
 
-    json_docs = []
-    for result in retrieval_results:
-        text = url = name = None
-        if "content" in result:
-            content = result["content"]
-            if "text" in content:
-                text = content["text"]
+    functionName = f"knowledge-base-for-{projectName}"
+    logger.info(f"functionName: {functionName}")
 
-        if "location" in result:
-            location = result["location"]
-            if "s3Location" in location:
-                uri = location["s3Location"]["uri"] if location["s3Location"]["uri"] is not None else ""
-                
-                name = uri.split("/")[-1]
-                # encoded_name = parse.quote(name)                
-                # url = f"{path}/{doc_prefix}{encoded_name}"
-                url = uri # TODO: add path and doc_prefix
-                
-            elif "webLocation" in location:
-                url = location["webLocation"]["url"] if location["webLocation"]["url"] is not None else ""
-                name = "WEB"
+    try:
+        payload = {
+            'function': 'search_rag',
+            'knowledge_base_name': knowledge_base_name,
+            'keyword': query,
+            'top_k': numberOfDocs,
+            'grading': grading_mode,
+            'model_name': model_name,
+            'multi_region': multi_region
+        }
+        logger.info(f"payload: {payload}")
 
-        json_docs.append({
-            "contents": text,              
-            "reference": {
-                "url": url,                   
-                "title": name,
-                "from": "RAG"
-            }
-        })
-    logger.info(f"json_docs: {json_docs}")
+        output = lambda_client.invoke(
+            FunctionName=functionName,
+            Payload=json.dumps(payload),
+        )
+        payload = json.load(output['Payload'])
+        logger.info(f"response: {payload['response']}")
+        
+    except Exception:
+        err_msg = traceback.format_exc()
+        logger.info(f"error message: {err_msg}")       
 
-    return json.dumps(json_docs, ensure_ascii=False)
- 
+    return payload['response']
+
+def get_reference_docs(docs):    
+    reference_docs = []
+    for doc in docs:
+        reference = doc.get("reference")
+        reference_docs.append(
+            Document(
+                page_content=doc.get("contents"),
+                metadata={
+                    'name': reference.get("title"),
+                    'url': reference.get("url"),
+                    'from': reference.get("from")
+                },
+            )
+        )     
+    return reference_docs
+
 def run_rag_with_knowledge_base(query, st):
     global reference_docs, contentList
     reference_docs = []
@@ -968,17 +1670,12 @@ def run_rag_with_knowledge_base(query, st):
     if debug_mode == "Enable":
         st.info(f"RAG 검색을 수행합니다. 검색어: {query}")  
 
-    json_docs = retrieve(query)    
-    logger.info(f"json_docs: {json_docs}")
-
-    relevant_docs = json.loads(json_docs)
-
-    relevant_context = ""
-    for doc in relevant_docs:
-        relevant_context += f"{doc['contents']}\n\n"
-
+    relevant_context = retrieve_knowledge_base(query)    
+    logger.info(f"relevant_context: {relevant_context}")
+    
     # change format to document
-    st.info(f"{len(relevant_docs)}개의 관련된 문서를 얻었습니다.")
+    reference_docs = get_reference_docs(json.loads(relevant_context))
+    st.info(f"{len(reference_docs)}개의 관련된 문서를 얻었습니다.")
 
     rag_chain = get_rag_prompt(query)
                        
@@ -1001,16 +1698,16 @@ def run_rag_with_knowledge_base(query, st):
         logger.info(f"error message: {err_msg}")                    
         raise Exception ("Not able to request to LLM")
     
-    if relevant_docs:
+    if reference_docs:
+        logger.info(f"reference_docs: {reference_docs}")
         ref = "\n\n### Reference\n"
-        for i, doc in enumerate(relevant_docs):
-            page_content = doc["contents"][:100].replace("\n", "")
-            ref += f"{i+1}. [{doc["reference"]['title']}]({doc["reference"]['url']}), {page_content}...\n"    
+        for i, reference in enumerate(reference_docs):
+            ref += f"{i+1}. [{reference.metadata['name']}]({reference.metadata['url']}), {reference.page_content[:100]}...\n"    
         logger.info(f"ref: {ref}")
         msg += ref
     
     return msg, reference_docs
-
+   
 def extract_thinking_tag(response, st):
     if response.find('<thinking>') != -1:
         status = response[response.find('<thinking>')+10:response.find('</thinking>')]
@@ -1041,20 +1738,23 @@ def add_notification(containers, message):
         containers['notification'][index].info(message)
     index += 1
 
-def update_streaming_result(containers, message):
+def update_streaming_result(containers, message, type):
     global streaming_index
-    streaming_index = index 
+    streaming_index = index
 
     if containers is not None:
-        containers['notification'][streaming_index].markdown(message)
-
-def update_tool_notification(containers, tool_index, message):
-    if containers is not None:
-        containers['notification'][tool_index].info(message)
+        if type == "markdown":
+            containers['notification'][streaming_index].markdown(message)
+        elif type == "info":
+            containers['notification'][streaming_index].info(message)
 
 tool_info_list = dict()
 tool_input_list = dict()
 tool_name_list = dict()
+
+sharing_url = config["sharing_url"] if "sharing_url" in config else None
+s3_prefix = "docs"
+capture_prefix = "captures"
 
 def get_tool_info(tool_name, tool_content):
     tool_references = []    
@@ -1124,6 +1824,73 @@ def get_tool_info(tool_name, tool_content):
                 
         logger.info(f"content: {content}")
         
+    # Knowledge Base
+    elif tool_name == "QueryKnowledgeBases": 
+        try:
+            # Handle case where tool_content contains multiple JSON objects
+            if tool_content.strip().startswith('{'):
+                # Parse each JSON object individually
+                json_objects = []
+                current_pos = 0
+                brace_count = 0
+                start_pos = -1
+                
+                for i, char in enumerate(tool_content):
+                    if char == '{':
+                        if brace_count == 0:
+                            start_pos = i
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0 and start_pos != -1:
+                            try:
+                                json_obj = json.loads(tool_content[start_pos:i+1])
+                                # logger.info(f"json_obj: {json_obj}")
+                                json_objects.append(json_obj)
+                            except json.JSONDecodeError:
+                                logger.info(f"JSON parsing error: {tool_content[start_pos:i+1][:100]}")
+                            start_pos = -1
+                
+                json_data = json_objects
+            else:
+                # Try original method
+                json_data = json.loads(tool_content)                
+            # logger.info(f"json_data: {json_data}")
+
+            # Build content
+            if isinstance(json_data, list):
+                for item in json_data:
+                    if isinstance(item, dict) and "content" in item:
+                        content_text = item["content"].get("text", "")
+                        content += content_text + "\n\n"
+
+                        uri = "" 
+                        if "location" in item:
+                            if "s3Location" in item["location"]:
+                                uri = item["location"]["s3Location"]["uri"]
+                                # logger.info(f"uri (list): {uri}")
+                                ext = uri.split(".")[-1]
+
+                                # if ext is an image 
+                                url = sharing_url + "/" + s3_prefix + "/" + uri.split("/")[-1]
+                                if ext in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "ico", "webp"]:
+                                    url = sharing_url + "/" + capture_prefix + "/" + uri.split("/")[-1]
+                                logger.info(f"url: {url}")
+                                
+                                tool_references.append({
+                                    "url": url, 
+                                    "title": uri.split("/")[-1],
+                                    "content": content_text[:100] + "..." if len(content_text) > 100 else content_text
+                                })          
+                
+        except json.JSONDecodeError as e:
+            logger.info(f"JSON parsing error: {e}")
+            json_data = {}
+            content = tool_content  # Use original content if parsing fails
+
+        logger.info(f"content: {content}")
+        logger.info(f"tool_references: {tool_references}")
+
     # aws document
     elif tool_name == "search_documentation":
         try:
@@ -1194,7 +1961,20 @@ def get_tool_info(tool_name, tool_content):
             json_data = json.loads(tool_content)
         
         logger.info(f"json_data: {json_data}")
-        payload = json_data["response"]["payload"]
+
+        if "content" in json_data:
+            content = json_data["content"]
+            logger.info(f"content: {content}")
+            if "result" in content:
+                result = content["result"]
+                logger.info(f"result: {result}")
+                
+        payload = {}
+        if "response" in json_data:
+            payload = json_data["response"]["payload"]
+        elif "content" in json_data:
+            payload = json_data
+
         if "content" in payload:
             payload_content = payload["content"]
             if "result" in payload_content:
@@ -1313,7 +2093,7 @@ async def run_strands_agent(query, strands_tools, mcp_servers, history_mode, con
 
     image_url = []
     references = []
-    
+
     # initiate agent
     await strands_agent.initiate_agent(
         system_prompt=None, 
@@ -1334,7 +2114,7 @@ async def run_strands_agent(query, strands_tools, mcp_servers, history_mode, con
                 text = event["data"]
                 logger.info(f"[data] {text}")
                 current += text
-                update_streaming_result(containers, current)
+                update_streaming_result(containers, current, "markdown")
 
             elif "result" in event:
                 final = event["result"]                
@@ -1404,8 +2184,8 @@ async def run_strands_agent(query, strands_tools, mcp_servers, history_mode, con
         if references:
             ref = "\n\n### Reference\n"
             for i, reference in enumerate(references):
-                page_content = reference['content'][:100].replace("\n", "")
-                ref += f"{i+1}. [{reference['title']}]({reference['url']}), {page_content}...\n"    
+                content = reference['content'][:100].replace("\n", "")
+                ref += f"{i+1}. [{reference['title']}]({reference['url']}), {content}...\n"    
             final_result += ref
 
         if containers is not None:
@@ -1413,8 +2193,45 @@ async def run_strands_agent(query, strands_tools, mcp_servers, history_mode, con
 
     return final_result, image_url
 
+memory_id = actor_id = session_id = None
+def initiate_memory():
+    global memory_id, actor_id, session_id
+
+    # initate memory variables    
+    memory_id, actor_id, session_id, namespace = agentcore_memory.load_memory_variables(user_id)
+    logger.info(f"memory_id: {memory_id}, actor_id: {actor_id}, session_id: {session_id}, namespace: {namespace}")
+
+    if memory_id is None:
+        # retrieve memory id
+        memory_id = agentcore_memory.retrieve_memory_id()
+        logger.info(f"memory_id: {memory_id}")        
+        
+        # create memory if not exists
+        if memory_id is None:
+            logger.info(f"Memory will be created...")
+            memory_id = agentcore_memory.create_memory(namespace)
+            logger.info(f"Memory was created... {memory_id}")
+        
+        # create strategy if not exists
+        agentcore_memory.create_strategy_if_not_exists(memory_id=memory_id, namespace=namespace, strategy_name=user_id)
+
+        # save memory variables
+        agentcore_memory.update_memory_variables(
+            user_id=user_id, 
+            memory_id=memory_id, 
+            actor_id=actor_id, 
+            session_id=session_id, 
+            namespace=namespace)
+    
+enable_short_term_memory = "Disable"
+    
+def save_to_memory(query, result):
+    if memory_id is None and enable_short_term_memory=="Enable":
+        initiate_memory()    
+    agentcore_memory.save_conversation_to_memory(memory_id, actor_id, session_id, query, result) 
+
 async def run_langgraph_agent(query, mcp_servers, history_mode, containers):
-    global index
+    global index, streaming_index
     index = 0
 
     image_url = []
@@ -1426,72 +2243,12 @@ async def run_langgraph_agent(query, mcp_servers, history_mode, containers):
     server_params = langgraph_agent.load_multiple_mcp_server_parameters(mcp_json)
     logger.info(f"server_params: {server_params}")    
 
-    try:
-        client = MultiServerMCPClient(server_params)
-        logger.info(f"MCP client created successfully")
-        
-        tools = await client.get_tools()
-        logger.info(f"get_tools() returned: {tools}")
-        
-        if tools is None:
-            logger.error("tools is None - MCP client failed to get tools")
-            tools = []
-        
-        tool_list = [tool.name for tool in tools] if tools else []
-        logger.info(f"tool_list: {tool_list}")
-        
-    except Exception as e:
-        logger.error(f"Error creating MCP client or getting tools: {e}")
-        
-        # Try to refresh bearer token and retry
-        logger.info("Attempting to refresh bearer token and retry...")
-        try:
-            # Get fresh bearer token from Cognito
-            config = utils.load_config()
-            bearer_token = mcp_config.create_cognito_bearer_token(config)
-            if bearer_token:
-                logger.info("Successfully obtained fresh bearer token")
-                
-                # Update the server parameters with new bearer token
-                for server_name, server_config in server_params.items():
-                    if 'headers' in server_config and 'Authorization' in server_config['headers']:
-                        server_config['headers']['Authorization'] = f"Bearer {bearer_token}"
-                        logger.info(f"Updated bearer token for server: {server_name}")
-                
-                # Save the new bearer token
-                secret_name = config.get('secret_name')
-                mcp_config.save_bearer_token(secret_name, bearer_token)
-                
-                # Retry with new bearer token
-                logger.info("Retrying MCP client creation with fresh bearer token...")
-                client = MultiServerMCPClient(server_params)
-                tools = await client.get_tools()
-                
-                if tools is None:
-                    logger.error("tools is still None after bearer token refresh")
-                    tools = []
-                
-                tool_list = [tool.name for tool in tools] if tools else []
-                logger.info(f"tool_list after retry: {tool_list}")
-                
-            else:
-                logger.error("Failed to get fresh bearer token from Cognito")
-                tools = []
-                tool_list = []
-                
-        except Exception as retry_error:
-            logger.error(f"Error during bearer token refresh and retry: {retry_error}")
-            tools = []
-            tool_list = []        
+    client = MultiServerMCPClient(server_params)
+    tools = await client.get_tools()
 
-    # If no tools available, use general conversation
-    if not tools:
-        logger.warning("No tools available, using general conversation mode")
-        result = "MCP 설정을 확인하세요."
-        if containers is not None:
-            containers['notification'][0].markdown(result)
-        return result, image_url
-    
+    tool_list = [tool.name for tool in tools]
+    logger.info(f"tool_list: {tool_list}")
+
     if history_mode == "Enable":
         app = langgraph_agent.buildChatAgentWithHistory(tools)
         config = {
@@ -1516,12 +2273,9 @@ async def run_langgraph_agent(query, mcp_servers, history_mode, containers):
     result = ""
     tool_used = False  # Track if tool was used
     tool_name = toolUseId = ""
-    async for output in app.astream(inputs, config, stream_mode="messages"):
-        # logger.info(f"output: {output}")
-
-        # Handle tuple output (message, metadata)
-        if isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], AIMessageChunk):
-            message = output[0]    
+    async for stream in app.astream(inputs, config, stream_mode="messages"):
+        if isinstance(stream[0], AIMessageChunk):
+            message = stream[0]    
             input = {}        
             if isinstance(message.content, list):
                 for content_item in message.content:
@@ -1538,7 +2292,7 @@ async def run_langgraph_agent(query, mcp_servers, history_mode, containers):
                                 result += text_content
                                 
                             # logger.info(f"result: {result}")                
-                            update_streaming_result(containers, result)
+                            update_streaming_result(containers, result, "markdown")
 
                         elif content_item.get('type') == 'tool_use':
                             logger.info(f"content_item: {content_item}")      
@@ -1546,10 +2300,8 @@ async def run_langgraph_agent(query, mcp_servers, history_mode, containers):
                                 toolUseId = content_item.get('id', '')
                                 tool_name = content_item.get('name', '')
                                 logger.info(f"tool_name: {tool_name}, toolUseId: {toolUseId}")
-                                add_notification(containers, f"Tool: {tool_name}, Input: {input}")
-
-                                tool_info_list[toolUseId] = index                     
-                                tool_name_list[toolUseId] = tool_name     
+                                streaming_index = index                                                                                                                         
+                                index += 1
                                                                     
                             if 'partial_json' in content_item:
                                 partial_json = content_item.get('partial_json', '')
@@ -1562,12 +2314,10 @@ async def run_langgraph_agent(query, mcp_servers, history_mode, containers):
                                 logger.info(f"input: {input}")
 
                                 logger.info(f"tool_name: {tool_name}, input: {input}, toolUseId: {toolUseId}")
-                                # add_notification(containers, f"Tool: {tool_name}, Input: {input}")
-                                index = tool_info_list[toolUseId]
-                                containers['notification'][index-1].info(f"Tool: {tool_name}, Input: {input}")
+                                update_streaming_result(containers, f"Tool: {tool_name}, Input: {input}", "info")
                         
-        elif isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], ToolMessage):
-            message = output[0]
+        elif isinstance(stream[0], ToolMessage):
+            message = stream[0]
             logger.info(f"ToolMessage: {message.name}, {message.content}")
             tool_name = message.name
             toolResult = message.content
@@ -1602,5 +2352,131 @@ async def run_langgraph_agent(query, mcp_servers, history_mode, containers):
     
     if containers is not None:
         containers['notification'][index].markdown(result)
+    
+    return result, image_url
+
+async def run_langgraph_agent_with_plan(query, mcp_servers, containers):
+    global index, streaming_index
+    index = 0
+
+    image_url = []
+    references = []
+
+    add_notification(containers, f"계획을 생성하는 중입니다...")
+
+    mcp_json = mcp_config.load_selected_config(mcp_servers)
+    logger.info(f"mcp_json: {mcp_json}")
+
+    server_params = langgraph_agent.load_multiple_mcp_server_parameters(mcp_json)
+    logger.info(f"server_params: {server_params}")    
+
+    client = MultiServerMCPClient(server_params)
+    logger.info(f"MCP client created successfully")
+    
+    tools = await client.get_tools()
+    logger.info(f"get_tools() returned: {tools}")
+    
+    tool_list = [tool.name for tool in tools] if tools else []
+    logger.info(f"tool_list: {tool_list}")
+        
+    app = langgraph_agent.buildChatAgentWithPlan(tools)
+    config = {
+        "recursion_limit": 50,
+        "configurable": {"thread_id": user_id},
+        "tools": tools,
+        "system_prompt": None,
+        "containers": containers
+    }        
+    
+    inputs = {
+        "messages": [HumanMessage(content=query)]
+    }
+            
+    result = ""
+    tool_used = False  # Track if tool was used
+    tool_name = toolUseId = ""
+    async for stream in app.astream(inputs, config, stream_mode="messages"):
+        if isinstance(stream[0], AIMessageChunk):
+            message = stream[0]    
+            input = {}        
+            if isinstance(message.content, list):
+                for content_item in message.content:
+                    if isinstance(content_item, dict):
+                        if content_item.get('type') == 'text':
+                            text_content = content_item.get('text', '')
+
+                            if tool_used:
+                                result = text_content
+                                tool_used = False
+                            else:
+                                result += text_content
+                                
+                            update_streaming_result(containers, result, "markdown")
+
+                        elif content_item.get('type') == 'tool_use':
+                            logger.info(f"content_item: {content_item}")      
+                            if 'id' in content_item and 'name' in content_item:
+                                toolUseId = content_item.get('id', '')
+                                tool_name = content_item.get('name', '')
+                                logger.info(f"tool_name: {tool_name}, toolUseId: {toolUseId}")
+                                streaming_index = index
+                                index += 1
+
+                            if 'partial_json' in content_item:
+                                partial_json = content_item.get('partial_json', '')
+                                logger.info(f"partial_json: {partial_json}")
+                                
+                                if toolUseId not in tool_input_list:
+                                    tool_input_list[toolUseId] = ""                                
+                                tool_input_list[toolUseId] += partial_json
+                                input = tool_input_list[toolUseId]
+                                logger.info(f"input: {input}")
+
+                                logger.info(f"tool_name: {tool_name}, input: {input}, toolUseId: {toolUseId}")
+                                update_streaming_result(containers, f"Tool: {tool_name}, Input: {input}", "info")
+                        
+        elif isinstance(stream[0], ToolMessage):
+            message = stream[0]
+            logger.info(f"ToolMessage: {message.name}, {message.content}")
+            tool_name = message.name
+            toolResult = message.content
+            toolUseId = message.tool_call_id
+            logger.info(f"toolResult: {toolResult}, toolUseId: {toolUseId}")
+            add_notification(containers, f"Tool Result: {toolResult}")
+            tool_used = True
+            
+            content, urls, refs = get_tool_info(tool_name, toolResult)
+            if refs:
+                for r in refs:
+                    references.append(r)
+                logger.info(f"refs: {refs}")
+            if urls:
+                for url in urls:
+                    image_url.append(url)
+                logger.info(f"urls: {urls}")
+
+            if content:
+                logger.info(f"content: {content}")        
+    
+    if not result:
+        result = "답변을 찾지 못하였습니다."        
+    logger.info(f"result: {result}")
+
+    if references:
+        ref = "\n\n### Reference\n"
+        for i, reference in enumerate(references):
+            page_content = reference['content'][:100].replace("\n", "")
+            ref += f"{i+1}. [{reference['title']}]({reference['url']}), {page_content}...\n"    
+        result += ref
+    
+    if containers is not None:
+        containers['notification'][index].markdown(result)
+
+    # save result to md file
+    request_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    key = f"artifacts/plan_{request_id}.md"
+    body = f"{result}"
+    with open(key, 'w') as f:
+        f.write(body)
     
     return result, image_url

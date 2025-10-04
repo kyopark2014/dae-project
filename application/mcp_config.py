@@ -307,6 +307,15 @@ def get_agent_runtime_arn(mcp_type: str):
         if agentRuntime["agentRuntimeName"] == agent_runtime_name:
             logger.info(f"agent_runtime_name: {agent_runtime_name}, agentRuntimeArn: {agentRuntime["agentRuntimeArn"]}")
             return agentRuntime["agentRuntimeArn"]
+    
+    # Try alternative naming pattern: mcp_{mcp_type}
+    alternative_name = f"mcp_{mcp_type.replace('-', '_')}"
+    logger.info(f"Trying alternative name: {alternative_name}")
+    for agentRuntime in agentRuntimes:
+        if agentRuntime["agentRuntimeName"] == alternative_name:
+            logger.info(f"Found with alternative name: {alternative_name}, agentRuntimeArn: {agentRuntime["agentRuntimeArn"]}")
+            return agentRuntime["agentRuntimeArn"]
+    
     return None
 
 def load_config(mcp_type):
@@ -384,6 +393,9 @@ def load_config(mcp_type):
     elif mcp_type == "kb-retriever":
         agent_arn = get_agent_runtime_arn(mcp_type)
         logger.info(f"mcp_type: {mcp_type}, agent_arn: {agent_arn}")
+        if agent_arn is None:
+            logger.error(f"Agent runtime not found for {mcp_type}")
+            return None
         encoded_arn = agent_arn.replace(':', '%3A').replace('/', '%2F')
 
         if not bearer_token:
